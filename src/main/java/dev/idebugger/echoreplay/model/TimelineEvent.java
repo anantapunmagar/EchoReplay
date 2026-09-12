@@ -16,7 +16,8 @@ public sealed interface TimelineEvent
         TimelineEvent.SneakSprint, TimelineEvent.Mount, TimelineEvent.Sound, TimelineEvent.Particle,
         TimelineEvent.Chat, TimelineEvent.WorldTime, TimelineEvent.Weather, TimelineEvent.Explosion,
         TimelineEvent.ItemUse, TimelineEvent.Teleport, TimelineEvent.Effect, TimelineEvent.CustomName,
-        TimelineEvent.Marker, TimelineEvent.EntityStatus {
+        TimelineEvent.Marker, TimelineEvent.EntityStatus, TimelineEvent.PlayerVitals,
+        TimelineEvent.PlayerInventory, TimelineEvent.GameMode, TimelineEvent.HeldSlot {
 
     long tickMillis();
 
@@ -47,10 +48,25 @@ public sealed interface TimelineEvent
     record WorldTime(long tickMillis, long time, boolean cycling) implements TimelineEvent {}
     record Weather(long tickMillis, int rainStrength, int thunderStrength) implements TimelineEvent {}
     record Explosion(long tickMillis, Vec3d pos, float power) implements TimelineEvent {}
+    // Note: power <= 0 marks a damageless burst (wind charge in old takes):
+    // playback renders wind-burst sound+gust instead of generic explode.
     record ItemUse(long tickMillis, int npcId, int hand, boolean started) implements TimelineEvent {}
     record Teleport(long tickMillis, int npcId, Vec3d pos, Rotation rot) implements TimelineEvent {}
     record Effect(long tickMillis, int npcId, boolean add, String effectKey, byte[] data) implements TimelineEvent {}
     record CustomName(long tickMillis, int npcId, String componentJson) implements TimelineEvent {}
     record Marker(long tickMillis, String name) implements TimelineEvent {}
     record EntityStatus(long tickMillis, int npcId, byte status) implements TimelineEvent {}
+    /** Recorded player vitals (first-person spectate): health, food level, saturation. */
+    record PlayerVitals(long tickMillis, int npcId, float health, int foodLevel, float saturation) implements TimelineEvent {}
+    /**
+     * Full recorded player inventory for first-person spectate.
+     * Slot layout: [0..35] main inventory (getContents order),
+     * [36] boots, [37] leggings, [38] chestplate, [39] helmet, [40] offhand.
+     * Each entry is an ItemStack NBT blob (empty = air).
+     */
+    record PlayerInventory(long tickMillis, int npcId, byte[][] slots) implements TimelineEvent {}
+    /** Recorded player gamemode (Bukkit GameMode value: 0 survival, 1 creative, 2 adventure, 3 spectator). */
+    record GameMode(long tickMillis, int npcId, int mode) implements TimelineEvent {}
+    /** Recorded player selected hotbar slot (0-8). */
+    record HeldSlot(long tickMillis, int npcId, int slot) implements TimelineEvent {}
 }

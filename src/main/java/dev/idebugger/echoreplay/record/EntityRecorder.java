@@ -1,7 +1,6 @@
 package dev.idebugger.echoreplay.record;
 
 import dev.idebugger.echoreplay.EchoReplay;
-import dev.idebugger.echoreplay.model.EntitySnapshot;
 import dev.idebugger.echoreplay.model.Rotation;
 import dev.idebugger.echoreplay.model.TimelineEvent;
 import dev.idebugger.echoreplay.model.Vec3d;

@@ -1,94 +1,124 @@
-# EchoReplay configuration v2 — every key below is read by the plugin.
-# See /er stats in-game for resolved values, and the startup log for any
-# unknown keys you might have carried over from v1.
-config-version: 2
-
+# EchoReplay configuration
+#
+# Config version — raised when defaults change meaning. On enable, old files
+# are backed up to config.yml.bak, missing keys are filled in, and changed
+# defaults are applied (logged). Never delete this key.
+config-version: 4
+#
+# Selection
 selection:
-  # Honored at /er wand (S-1/D-2 fix). PDC tag wins, so an existing wand
-  # still works even if you change this. Valid values are Material enum names.
+  # Material of the selection wand (any valid Material name)
   wand-material: GOLDEN_AXE
-  # Block count limit. Bypass with the echoreplay.bypass-limits permission.
+  # Maximum selectable volume in blocks (bypass with echoreplay.bypass-limits)
   max-volume: 300000
-  # Horizontal span limit (x or z). Bypass with echoreplay.bypass-limits.
+  # Maximum x/z span of the selection in blocks
   max-horizontal-span: 256
-  # Reserved for a future selection wireframe renderer (currently unused).
-  outline-particles: true
+  # Render a wireframe outline (particles) of each player's selection to that
+  # player, every 10 ticks. Off by default to keep tick cost at zero for
+  # players who never select.
+  outline-particles: false
 
-recording:
-  # Reserved for the streaming-journal feature (planned P-1). v1's flush
-  # was a no-op; this key is read but currently defers to stop-time write.
+# Privacy opt-outs (/er privacy). Exempt players are never written into
+# recordings and never see the REC bar — but they can't place/break blocks
+# inside an active recording cuboid either.
+privacy:
+  # Master switch. false = /er privacy refuses, everyone is always recorded.
+  enabled: true
+  # Admin override. true = ignore every stored opt-out and record everyone
+  # anyway (preferences are kept but have no effect).
+  enforce-recording: false
+
+# Recording
+recording:  # Grow the recorded region by this many blocks on every side (clamped to
+  # world height limits) so edge activity is not cut off.
+  margin-blocks: 8
+  # How often (seconds) buffered events are flushed to the crash-safety
+  # checkpoint file (name.echoreplay.gz.partial). A crash mid-recording can
+  # lose at most this many seconds.
   flush-seconds: 15
-  # Maximum recording length. 0 = unlimited. Hit this -> auto-stop and save.
-  max-duration-minutes: 30
-  # Capture chat events. Disable to suppress chat recording entirely.
+  # Incremental autosave: every N seconds the IO thread fsyncs the checkpoint
+  # and writes name.autosave.json (media time, event counts) so /er resume can
+  # continue a recording after a crash/restart instead of finalizing it.
+  # Runs fully async on the IO executor — never main, never Netty (blocking
+  # Netty disconnects players). 0 = off (checkpoint recovery still works).
+  autosave-seconds: 60
+  # Record chat messages of players in the region
   capture-chat: true
-  # Reserved for the WorldTime recorder (planned F-2). Read but currently
-  # has no effect — no recorder is wired.
-  capture-time: true
-  # Reserved for the Weather recorder (planned F-2). Read but currently
-  # has no effect — no recorder is wired.
-  capture-weather: true
-  # Whether to capture particle events. Default true.
+  # Record sound effects sent to clients inside the region
+  capture-sounds: true
+  # Record particle effects sent to clients inside the region
   capture-particles: true
-  # Reserved for a future per-second particle budget. Read but not enforced yet.
+  # Drop particles above this per-media-second rate (0 = unlimited)
   max-particles-per-second: 400
-  # Background RegionDiff scan budget per pass, in milliseconds. Lower = less
-  # main-thread pressure, slower coverage; higher = faster coverage, more CPU.
-  # (Was a hidden key in v1 — now documented.)
-  scan-ms-per-pass: 12
-  # Legacy key, ignored — scanning is full-time with a budget per pass.
-  scan-interval-ticks: 1
-  # Tile-entity NBT capture is on for every TileState (D-5). No config needed.
-
-replay:
-  # If true, /er play defaults to virtual mode (no world edits). If false,
-  # /er play defaults to world mode (writes recorded snapshot to live terrain).
-  # World mode is destructive — see S-3 / D-7 for the race + seek guards.
-  virtual-packets-only: false
-  # Reserved for the force-spectator feature (planned U-5). Read but not yet
-  # enforced — viewers are not put in spectator mode currently.
-  force-spectator: true
-  # Players within this many blocks of the cuboid are auto-added as viewers.
-  # Set to 0 to disable auto-watch.
-  auto-watch-radius: 32
-  # Reserved for the world-time drive feature (planned F-2). Read but no-op.
-  drive-world-time: false
-  # Cancel BlockPhysicsEvent inside the cuboid while a world-mode replay runs.
-  # Keeps flowing water / falling sand / piston cascades out of the snapshot.
-  physics-frozen: true
-  # Skip sound + particle emission when playback speed exceeds this value.
-  # Set to 0 to never skip (let catch-up bursts flood — not recommended).
-  skip-sfx-when-speed-above: 2.0
-  # Default playback speed at /er play.
-  default-speed: 1.0
-  # Hard speed bounds (S-7). /er speed clamps to this range; NaN/-inf rejected.
-  min-speed: 0.125
-  max-speed: 16.0
-  # Per-tick time budget for streaming phases (CAPTURE/SNAPSHOT/RESTORE/CATCHUP)
-  # in milliseconds. Lower = less main-thread pressure, slower phases.
-  # (Was a hidden key replay.phase-max-ms-per-tick in v1 — now documented
-  # and the alias still works for back-compat.)
-  phase-budget-ms-per-tick: 8
+  # Cap high-volume recording events (movement/particle/sound) per wall-clock
+  # second. Critical events (blocks, spawns, inventory, markers) are never
+  # dropped; movement is sampled when over budget. Prevents OOM on busy
+  # servers (20 players x 20 ticks = thousands of events/sec). 0 = unlimited.
+  max-events-per-second: 8000
+  # Record world time changes (driven back during replay if replay.drive-world-time)
+  capture-time: true
+  # Hard stop after this many minutes of recorded media time
+  max-duration-minutes: 30
+  # Red "REC" bossbar for players inside the recording cuboid while a
+  # recording runs (hidden again when they leave the region). false = never.
+  rec-indicator: true
+  # Region-wide diff: a background thread rescans the whole cuboid to catch
+  # EVERY block change, even ones that never fire a Bukkit event (crystal
+  # explosions, cancelled breaks, plugin writes, portal formation).
+  scan-interval-ticks: 1      # schedule a diff pass every N ticks (1 = full-time)
+  scan-ms-per-pass: 12        # CPU budget per diff pass in ms (clamped 1..40)
   snapshot:
-    # Maximum blocks applied per tick during the snapshot apply/restore phases.
-    # Default 8000 covers a 20×20×20 region in roughly one tick.
+    # Secondary cap (blocks/tick) for the pre-record terrain snapshot
+    # (primary cap is a 10ms time budget per tick)
     blocks-per-tick: 8000
+
+# Replay
+replay:
+  # When true, replay sends block changes as viewer-only packets instead of
+  # restoring the world (no world writes at all)
+  virtual-packets-only: false
+  # Force viewers into spectator mode while watching (previous gamemode is
+  # restored when they leave or playback stops). Disabled by default: playing
+  # a replay no longer yanks you into vanilla spectator mode; use /er cam
+  # or /er spectate when you actually want a spectator view.
+  force-spectator: false
+  # Players within this many blocks of the cuboid see the replay automatically
+  auto-watch-radius: 32
+  # Capture the live terrain before a world-mode replay and restore it on stop
+  backup-live-cuboid: true
+  # Drive each viewer's client-side time-of-day and weather from the
+  # recording while playing (world mode only). Purely visual per player:
+  # the real world is never modified. Needs capture-time recordings.
+  drive-world-time: false
+  # Cancel block physics inside the cuboid while a world-mode replay runs
+  physics-frozen: true
+  # Skip recorded sounds/particles when playing faster than this speed
+  skip-sfx-when-speed-above: 2.0
+  # Initial playback speed
+  default-speed: 1.0
+  # Per-tick CPU budget (ms) for the streaming phases (snapshot/restore/seek)
+  phase-max-ms-per-tick: 8
   border:
+    # Filled-face particle border around the playback region
     enabled: true
     particle: END_ROD
     interval-ticks: 4
     step: 2.0
     max-per-frame: 300
 
+# Storage
 storage:
-  # Subdirectory of plugins/EchoReplay/ where .echoreplay.gz files live.
   directory: recordings
-  # Reserved for the streaming journal crash-recovery feature (planned P-1).
-  # Read but not yet enforced — partial recordings are deleted on startup.
-  keep-partial-on-crash: true
-  # Compression algorithm. Currently only "gzip" is supported; "zstd" is
-  # reserved for a future format v2 (P-7).
-  compression: gzip
-  # Maximum total size of the recordings directory, in GB. 0 = no quota.
-  # Reserved for a future auto-prune-oldest feature. Read but not enforced.
-  max-size-gb: 0
+  # Delete recordings (and their leftover checkpoints) older than this many
+  # days on plugin start and after each save. 0 = keep forever.
+  max-age-days: 0
+  # Seal and rotate the crash-safety checkpoint (.partial) once it exceeds
+  # this many MB, starting a fresh .partial (.partial.rot<N> kept for
+  # recovery, deleted on clean stop). Bounds disk use on long dynamic
+  # recordings. 0 = never rotate.
+  checkpoint-rotate-mb: 256
+  # Delete the crash-safety checkpoint (.partial) right after a successful
+  # save. The checkpoint is a raw uncompressed file, so it looks much bigger
+  # than the final recording next to it. true = keep it as an extra safety
+  # net (it is deleted on the next plugin start instead).
+  keep-partial-on-crash: false

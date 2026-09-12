@@ -58,7 +58,7 @@ public final class NbtBytes {
     private static void setAnchorCharges(Object state, int charges) {
         try {
             state.getClass().getMethod("setCharges", int.class).invoke(state, charges);
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
     }
 
@@ -131,7 +131,7 @@ public final class NbtBytes {
                     }
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
     }
 }

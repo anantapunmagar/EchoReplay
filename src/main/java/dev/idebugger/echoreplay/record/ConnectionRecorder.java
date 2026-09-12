@@ -42,6 +42,7 @@ public final class ConnectionRecorder implements Listener {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
+        if (plugin.privacy().isExempt(p)) return;
         if (!inRegion(s, p)) return;
         int npc = s.npcIdFor(p.getUniqueId());
         s.markEntitySpawned(p.getUniqueId());
@@ -54,6 +55,7 @@ public final class ConnectionRecorder implements Listener {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
+        if (plugin.privacy().isExempt(p)) return;
         if (!p.getWorld().getUID().equals(s.world().getUID())) return;
         int npc = s.npcIdFor(p.getUniqueId());
         // D-8.5: emit only PlayerLeave — v1 ALSO emitted EntityLeave for the
@@ -69,8 +71,13 @@ public final class ConnectionRecorder implements Listener {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
-        if (p == null || !p.getWorld().getUID().equals(s.world().getUID())) {
-            int npc = p == null ? 0 : s.npcIdFor(p.getUniqueId());
+        if (p != null && plugin.privacy().isExempt(p)) {
+            int npc = s.npcIdFor(p.getUniqueId());
+            s.emit(new TimelineEvent.PlayerLeave(s.mediaMillis(), npc, 1));
+            s.emit(new TimelineEvent.EntityLeave(s.mediaMillis(), npc));
+            return;
+        }
+        if (p == null || !p.getWorld().getUID().equals(s.world().getUID())) {            int npc = p == null ? 0 : s.npcIdFor(p.getUniqueId());
             if (p != null) {
                 // D-8.5: same dedup — PlayerLeave alone.
                 s.emit(new TimelineEvent.PlayerLeave(s.mediaMillis(), npc, 1));
@@ -95,7 +102,7 @@ public final class ConnectionRecorder implements Listener {
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
         if (p == null) return;
-        var from = p.getWorld().getUID().equals(s.world().getUID());
+        if (plugin.privacy().isExempt(p)) return;
         var to = e.getTo() != null && e.getTo().getWorld() != null && e.getTo().getWorld().getUID().equals(s.world().getUID());
         int npc = s.npcIdFor(p.getUniqueId());
         if (to) {
@@ -105,7 +112,7 @@ public final class ConnectionRecorder implements Listener {
         }
     }
 
-    private static PlayerSkin skin(Player p) {
+    static PlayerSkin skin(Player p) {
         try {
             com.github.retrooper.packetevents.protocol.player.User user =
                     com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().getUser(p);
@@ -118,28 +125,28 @@ public final class ConnectionRecorder implements Listener {
                     }
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         return new PlayerSkin(null, null);
     }
 
-    private static Vec3d pos(Player p) {
+    static Vec3d pos(Player p) {
         return pos(p.getLocation());
     }
 
-    private static Vec3d pos(org.bukkit.Location l) {
+    static Vec3d pos(org.bukkit.Location l) {
         return new Vec3d(l.x(), l.y(), l.z());
     }
 
-    private static Rotation rot(Player p) {
+    static Rotation rot(Player p) {
         return rot(p.getLocation());
     }
 
-    private static Rotation rot(org.bukkit.Location l) {
+    static Rotation rot(org.bukkit.Location l) {
         return new Rotation(l.getPitch(), l.getYaw(), l.getYaw());
     }
 
-    private static List<byte[]> equipment(Player p) {
+    static List<byte[]> equipment(Player p) {
         var eq = p.getInventory();
         return List.of(
                 EquipmentRecorder.serializeItem(eq.getItemInMainHand()),

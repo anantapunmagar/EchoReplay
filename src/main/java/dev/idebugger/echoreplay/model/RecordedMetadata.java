@@ -98,20 +98,18 @@ public final class RecordedMetadata {
                 out.writeByte(TYPE_BOOLEAN);
                 out.writeInt(fw.isShotAtAngle() ? 1 : 0);
                 count++;
-            } else if (e instanceof org.bukkit.entity.Zombie) {
-                // Undead ageables store baby-ness as a BYTE boolean at index 15.
-                // Sending an INT here crashes the client, so always use TYPE_BYTE.
-                out.writeByte(AGE_INDEX);
-                out.writeByte(TYPE_BYTE);
-                out.writeInt(1);
-                count++;
             } else if (e instanceof org.bukkit.entity.Ageable a && !a.isAdult()) {
+                // Baby-ness: undead ageables (Zombie implements Ageable in
+                // paper-api 1.21.4+) store it as a BYTE boolean at index 15 —
+                // sending an INT there crashes the client. Other ageables use
+                // the negative-INT age convention.
+                boolean undead = e instanceof org.bukkit.entity.Zombie;
                 out.writeByte(AGE_INDEX);
-                out.writeByte(TYPE_INT);
-                out.writeInt(-24000);
+                out.writeByte(undead ? TYPE_BYTE : TYPE_INT);
+                out.writeInt(undead ? 1 : -24000);
                 count++;
             }
-        } catch (IOException ignored) {
+        } catch (IOException ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed IOException", ignored);
             return null;
         }
         if (count == 0) return null;

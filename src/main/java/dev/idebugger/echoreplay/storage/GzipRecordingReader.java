@@ -80,6 +80,67 @@ public final class GzipRecordingReader {
         }
     }
 
+    /**
+     * Lenient reader for raw (non-gzip) crash-safety checkpoint files. Unlike
+     * {@link #read} it tolerates a truncated final section (crash mid-write):
+     * complete sections are kept, the truncated tail is dropped. Sections are
+     * assigned in file order, so the LAST PALETTE seen wins — checkpoints
+     * append an up-to-date palette with every flush.
+     *
+     * @return loaded reader, or null when no complete section could be read.
+     */
+    public static GzipRecordingReader readLenient(java.io.InputStream raw) {
+        Io.LeIn in = null;
+        try {
+            in = Io.leIn(raw);
+            byte[] magic = new byte[4];
+            in.readFully(magic);
+            boolean ok = magic[0] == 'E' && magic[1] == 'C' && magic[2] == 'H' && magic[3] == 'O';
+            if (!ok) {
+                throw new IOException("Bad magic — not an EchoReplay file");
+            }
+            int format = in.readUnsignedShort();
+            if (format > RecordingFormat.FORMAT) {
+                throw new IOException("Recording format " + format + " newer than supported " + RecordingFormat.FORMAT);
+            }
+            in.readUnsignedShort(); // flags
+
+            GzipRecordingReader r = new GzipRecordingReader();
+            boolean gotAny = false;
+            while (true) {
+                int type;
+                int len;
+                try {
+                    type = in.readInt();
+                    len = in.readInt();
+                    byte[] body = new byte[len];
+                    in.readFully(body);
+                    switch (type) {
+                        case RecordingFormat.SEC_META -> { r.meta = body; gotAny = true; }
+                        case RecordingFormat.SEC_PALETTE -> { r.palette = parsePalette(body); gotAny = true; }
+                        case RecordingFormat.SEC_BLOCKS -> {
+                            BlockDataBox b = parseBlocks(body);
+                            r.blockData = b.data;
+                            r.blockSizeX = b.sizeX;
+                            r.blockSizeY = b.sizeY;
+                            r.blockSizeZ = b.sizeZ;
+                            gotAny = true;
+                        }
+                        case RecordingFormat.SEC_BLOCK_NBT -> { r.blockNbt = body; gotAny = true; }
+                        case RecordingFormat.SEC_ENTITIES -> { r.entities = body; gotAny = true; }
+                        case RecordingFormat.SEC_TIMELINE -> r.timelineFragments.add(body);
+                        default -> {/* unknown section — skip */}
+                    }
+                } catch (EOFException eof) {
+                    break; // truncated tail after a crash — keep what we have
+                }
+            }
+            return gotAny ? r : null;
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
     public byte[] meta() { return meta; }
     public List<String> palette() { return palette; }
     public int[] blockData() { return blockData; }
@@ -102,7 +163,7 @@ public final class GzipRecordingReader {
                 in.readFully(body);
                 var ev = TimelineCodec.decode(body, typeId, t, palette);
                 if (ev != null) out.add(ev);
-            } catch (IOException ignored) {
+            } catch (IOException ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed IOException", ignored);
             }
         }
         out.sort(java.util.Comparator.comparingLong(dev.idebugger.echoreplay.model.TimelineEvent::tickMillis));

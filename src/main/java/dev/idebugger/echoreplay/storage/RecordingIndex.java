@@ -57,7 +57,7 @@ public final class RecordingIndex {
                         cfg.getInt(key + ".minX"), cfg.getInt(key + ".minY"), cfg.getInt(key + ".minZ"),
                         cfg.getInt(key + ".maxX"), cfg.getInt(key + ".maxY"), cfg.getInt(key + ".maxZ")
                 ));
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
     }
@@ -80,7 +80,7 @@ public final class RecordingIndex {
         }
         try {
             cfg.save(file);
-        } catch (IOException ignored) {
+        } catch (IOException ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed IOException", ignored);
         }
     }
 }

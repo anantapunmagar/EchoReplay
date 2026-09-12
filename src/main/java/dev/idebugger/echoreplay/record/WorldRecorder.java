@@ -54,7 +54,7 @@ public final class WorldRecorder implements Listener {
             var tile = block.getState(true);
             if (tile != null) nbt = NbtBytes.serializeBlockState(tile);
             if (nbt != null && nbt.length == 0) nbt = null;
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             nbt = null;
         }
         s.emit(new TimelineEvent.BlockSet(s.mediaMillis(),
@@ -116,6 +116,17 @@ public final class WorldRecorder implements Listener {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         if (!e.getLocation().getWorld().getUID().equals(s.world().getUID())) return;
+        // Wind-charge bursts travel through the explosion pipeline (zero block
+        // damage) but sound nothing like an explosion — their real audio is
+        // captured separately as a sound packet. Recording them here replayed
+        // every wind charge as entity.generic.explode.
+        try {
+            if (e.getEntity() instanceof org.bukkit.entity.WindCharge) return;
+            if (e.getYield() <= 0 && e.blockList().isEmpty()) return;
+        } catch (Exception ex) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: explosion filter check failed", ex);
+        }
         s.emit(new TimelineEvent.Explosion(s.mediaMillis(),
                 new dev.idebugger.echoreplay.model.Vec3d(e.getLocation().x(), e.getLocation().y(), e.getLocation().z()),
                 e.getYield()));

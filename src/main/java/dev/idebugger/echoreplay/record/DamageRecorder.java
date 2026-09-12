@@ -27,6 +27,7 @@ public final class DamageRecorder implements Listener {
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         if (e.isCancelled() || e.getDamage() <= 0) return;
         Entity ent = e.getEntity();
+        if (ent instanceof Player pv && plugin.privacy().isExempt(pv)) return;
         if (!ent.getWorld().getUID().equals(s.world().getUID())) return;
         if (!s.cuboid().contains(ent.getLocation().getBlockX(),
                 ent.getLocation().getBlockY(), ent.getLocation().getBlockZ())) return;

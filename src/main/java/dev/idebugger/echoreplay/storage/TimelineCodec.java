@@ -50,6 +50,10 @@ public final class TimelineCodec {
             case TimelineEvent.CustomName ignored -> RecordingFormat.EV_CUSTOM_NAME;
             case TimelineEvent.Marker ignored -> RecordingFormat.EV_MARKER;
             case TimelineEvent.EntityStatus ignored -> RecordingFormat.EV_ENTITY_STATUS;
+            case TimelineEvent.PlayerVitals ignored -> RecordingFormat.EV_PLAYER_VITALS;
+            case TimelineEvent.PlayerInventory ignored -> RecordingFormat.EV_PLAYER_INVENTORY;
+            case TimelineEvent.GameMode ignored -> RecordingFormat.EV_PLAYER_GAMEMODE;
+            case TimelineEvent.HeldSlot ignored -> RecordingFormat.EV_PLAYER_HELD_SLOT;
         };
     }
 
@@ -245,6 +249,29 @@ public final class TimelineCodec {
             case TimelineEvent.EntityStatus s -> {
                 out.writeInt(s.npcId());
                 out.writeByte(s.status());
+            }
+            case TimelineEvent.PlayerVitals v -> {
+                out.writeInt(v.npcId());
+                out.writeFloat(v.health());
+                out.writeByte(v.foodLevel());
+                out.writeFloat(v.saturation());
+            }
+            case TimelineEvent.PlayerInventory inv -> {
+                out.writeInt(inv.npcId());
+                out.writeShort(inv.slots().length);
+                for (byte[] slot : inv.slots()) {
+                    int len = slot == null ? 0 : slot.length;
+                    out.writeInt(len);
+                    if (len > 0) out.write(slot);
+                }
+            }
+            case TimelineEvent.GameMode g -> {
+                out.writeInt(g.npcId());
+                out.writeByte(g.mode());
+            }
+            case TimelineEvent.HeldSlot h -> {
+                out.writeInt(h.npcId());
+                out.writeByte(h.slot());
             }
         }
         out.flush();
@@ -457,6 +484,34 @@ public final class TimelineCodec {
                 int npc = in.readInt();
                 byte st = (byte) in.readByte();
                 yield new TimelineEvent.EntityStatus(tickMillis, npc, st);
+            }
+            case RecordingFormat.EV_PLAYER_VITALS -> {
+                int npc = in.readInt();
+                float health = in.readFloat();
+                int food = in.readByte();
+                float sat = in.readFloat();
+                yield new TimelineEvent.PlayerVitals(tickMillis, npc, health, food, sat);
+            }
+            case RecordingFormat.EV_PLAYER_INVENTORY -> {
+                int npc = in.readInt();
+                int n = in.readUnsignedShort();
+                byte[][] slots = new byte[Math.min(n, 256)][];
+                for (int i = 0; i < slots.length; i++) {
+                    int len = in.readInt();
+                    slots[i] = len > 0 ? new byte[len] : new byte[0];
+                    if (len > 0) in.readFully(slots[i]);
+                }
+                yield new TimelineEvent.PlayerInventory(tickMillis, npc, slots);
+            }
+            case RecordingFormat.EV_PLAYER_GAMEMODE -> {
+                int npc = in.readInt();
+                int mode = in.readByte() & 0xFF;
+                yield new TimelineEvent.GameMode(tickMillis, npc, mode);
+            }
+            case RecordingFormat.EV_PLAYER_HELD_SLOT -> {
+                int npc = in.readInt();
+                int slot = in.readByte() & 0xFF;
+                yield new TimelineEvent.HeldSlot(tickMillis, npc, slot);
             }
             default -> null;
         };

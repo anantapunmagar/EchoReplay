@@ -25,7 +25,6 @@ public final class RecordingFormat {
     public static final int SEC_BLOCK_NBT = 4;
     public static final int SEC_ENTITIES = 5;
     public static final int SEC_TIMELINE = 6;
-    public static final int SEC_MARKERS = 7;
 
     // Timeline event type ids (stable — never reorder).
     public static final int EV_KEEP_ALIVE = 0;
@@ -58,4 +57,8 @@ public final class RecordingFormat {
     public static final int EV_CUSTOM_NAME = 27;
     public static final int EV_MARKER = 28;
     public static final int EV_ENTITY_STATUS = 29;
+    public static final int EV_PLAYER_VITALS = 30;
+    public static final int EV_PLAYER_INVENTORY = 31;
+    public static final int EV_PLAYER_GAMEMODE = 32;
+    public static final int EV_PLAYER_HELD_SLOT = 33;
 }

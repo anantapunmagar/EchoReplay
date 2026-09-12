@@ -19,6 +19,11 @@ public final class SelectionManager {
         return byPlayer.computeIfAbsent(p.getUniqueId(), id -> new Selection(p.getWorld()));
     }
 
+    /** Existing selection or null — without creating one. */
+    public Selection getIfExists(Player p) {
+        return byPlayer.get(p.getUniqueId());
+    }
+
     public void clear(Player p) {
         byPlayer.remove(p.getUniqueId());
     }

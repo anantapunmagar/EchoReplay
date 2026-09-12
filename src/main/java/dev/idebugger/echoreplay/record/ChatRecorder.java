@@ -28,6 +28,7 @@ public final class ChatRecorder implements Listener {
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         if (!plugin.cfg().getBoolean("recording.capture-chat", true)) return;
         Player p = e.getPlayer();
+        if (plugin.privacy().isExempt(p)) return;
         if (!p.getWorld().getUID().equals(s.world().getUID())) return;
         Cuboid c = s.cuboid();
         if (!c.contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ())) return;

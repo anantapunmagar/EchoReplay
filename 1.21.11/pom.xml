@@ -7,7 +7,7 @@
     <parent>
         <groupId>com.echoreplay</groupId>
         <artifactId>echoreplay</artifactId>
-        <version>1.1.0</version>
+        <version>1.1.4</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -24,7 +24,7 @@
 
     <!-- Nyx style: module artifact name matches version for versioning -->
     <build>
-        <finalName>echoreplay-1.21.11+1.1.0</finalName>
+        <finalName>echoreplay-1.21.11+1.1.4</finalName>
         <resources>
             <resource>
                 <directory>../src/main/resources</directory>

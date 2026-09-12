@@ -72,6 +72,7 @@ public final class EntityTickRecorder {
         // Book-keeping set of mobs we observed this tick, so we can emit a
         // LEAVE for mobs that were tracked but vanished from the region.
         Map<java.util.UUID, EntityPose> observed = new HashMap<>();
+        boolean seenPlayer = false;
 
         // Centered box with exact half-extents: the old call passed full
         // sizes as radii from the min corner, scanning 8x the volume and
@@ -86,7 +87,15 @@ public final class EntityTickRecorder {
             UUID uuid = e.getUniqueId();
             Location loc = e.getLocation();
             if (!c.contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) continue;
+            // Privacy opt-outs are never recorded: not observed, not tracked,
+            // not added to the region set (which also gates their movement
+            // packets). Vanishing mid-take emits a normal LEAVE below.
+            if (isPlayer && plugin.privacy().isExempt(uuid)) {
+                inRegion.remove(uuid);
+                continue;
+            }
             inRegion.add(uuid);
+            if (isPlayer) seenPlayer = true;
 
             // Pose / stance capture applies to everyone (players + mobs).
             captureStance(s, uuid, e);
@@ -101,17 +110,30 @@ public final class EntityTickRecorder {
             observed.put(uuid, new EntityPose(pos, rot));
 
             if (isPlayer) {
+                // Anchor the packet-thread movement baseline so rotation-only
+                // packets (look-around while standing still) record immediately
+                // instead of being dropped for lack of a position baseline.
+                dev.idebugger.echoreplay.record.MovementRecorder mr = plugin.movementRecorder();
+                if (mr != null) mr.seedIfAbsent(uuid, x, y, z, yaw, pitch);
                 EntityPose prevPlayer = lastPlayerSeen.get(uuid);
-                if (prevPlayer == null) {
+                boolean first = prevPlayer == null;
+                if (first) {
+                    // First observation — a fresh joiner (deduped against
+                    // ConnectionRecorder's join event) or a player re-entering
+                    // the region after walking out. Carry real skin + current
+                    // equipment so re-entry does not spawn a skinless,
+                    // unarmed fake player.
                     if (s.markEntitySpawned(uuid)) {
                         int npc = s.npcIdFor(uuid);
+                        Player pl = (Player) e;
                         s.emit(new TimelineEvent.PlayerSpawn(s.mediaMillis(), npc, uuid,
-                                e.getName(), null, pos, rot, null, null));
+                                pl.getName(), ConnectionRecorder.skin(pl), pos, rot,
+                                ConnectionRecorder.equipment(pl), null));
                     }
-                    lastPlayerSeen.put(uuid, new EntityPose(pos, rot));
-                } else {
-                    lastPlayerSeen.put(uuid, new EntityPose(pos, rot));
                 }
+                lastPlayerSeen.put(uuid, new EntityPose(pos, rot));
+                // First-person spectate data: vitals + full inventory.
+                capturePlayerState(s, (Player) e, uuid, first);
                 continue;
             }
 
@@ -178,10 +200,17 @@ public final class EntityTickRecorder {
                     long t = s.mediaMillis();
                     s.emit(new TimelineEvent.PlayerLeave(t, npc, 1));
                     s.unmarkEntitySpawned(en.getKey());
+                    forgetVitals(en.getKey());
                     it.remove();
                     inRegion.remove(en.getKey());
                 }
             }
+        }
+        // Tell the background diff scanner whether anyone is around to see
+        // changes (idle scans drop to ~1/sec; paused entirely while lagging).
+        try {
+            plugin.recordingManager().regionDiffRecorder().setAudienceNearby(seenPlayer);
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
     }
 
@@ -226,6 +255,100 @@ public final class EntityTickRecorder {
         return Math.abs(a.yaw() - b.yaw()) < 0.5f && Math.abs(a.pitch() - b.pitch()) < 0.5f;
     }
 
+    // --- First-person spectate capture (vitals + full inventory) -----------
+
+    private record Vitals(float health, int food, float saturation) {}
+    private final Map<UUID, Vitals> lastVitals = new HashMap<>();
+    private final Map<UUID, byte[][]> lastInventoryBytes = new HashMap<>();
+    private final Map<UUID, Integer> lastGameMode = new HashMap<>();
+    private final Map<UUID, Integer> lastHeldSlot = new HashMap<>();
+
+    /**
+     * Records a tracked player's vitals, gamemode, held hotbar slot (on
+     * change) and full inventory (on change, or once as a baseline at first
+     * observation) so playback can spectate them in first person with the
+     * same health/hunger/items/mode/held-item.
+     */
+    private void capturePlayerState(RecordingSession s, Player p, UUID uuid, boolean baseline) {
+        float health = (float) p.getHealth();
+        int food = p.getFoodLevel();
+        float sat = p.getSaturation();
+        Vitals prev = lastVitals.get(uuid);
+        if (prev == null || prev.health() != health || prev.food() != food || prev.saturation() != sat) {
+            lastVitals.put(uuid, new Vitals(health, food, sat));
+            s.emit(new TimelineEvent.PlayerVitals(s.mediaMillis(), s.npcIdFor(uuid), health, food, sat));
+        }
+        int mode;
+        try {
+            mode = p.getGameMode().getValue();
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
+            mode = 0;
+        }
+        Integer prevMode = lastGameMode.get(uuid);
+        if (prevMode == null || prevMode != mode) {
+            lastGameMode.put(uuid, mode);
+            s.emit(new TimelineEvent.GameMode(s.mediaMillis(), s.npcIdFor(uuid), mode));
+        }
+        org.bukkit.inventory.PlayerInventory inv = p.getInventory();
+        int held = 0;
+        try {
+            held = inv.getHeldItemSlot();
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
+        }
+        Integer prevHeld = lastHeldSlot.get(uuid);
+        if (prevHeld == null || prevHeld != held) {
+            lastHeldSlot.put(uuid, held);
+            s.emit(new TimelineEvent.HeldSlot(s.mediaMillis(), s.npcIdFor(uuid), held));
+        }
+        byte[][] current = serializeInventory(inv);
+        if (baseline || inventoryChanged(uuid, current)) {
+            s.emit(new TimelineEvent.PlayerInventory(s.mediaMillis(), s.npcIdFor(uuid),
+                    current));
+            lastInventoryBytes.put(uuid, current);
+        }
+    }
+
+    private boolean inventoryChanged(UUID uuid, byte[][] current) {
+        byte[][] prev = lastInventoryBytes.get(uuid);
+        if (prev == null) return true;
+        if (prev.length != current.length) return true;
+        for (int i = 0; i < current.length; i++) {
+            if (!java.util.Arrays.equals(prev[i], current[i])) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 41-slot layout: [0..35] main inventory ({@code getContents} order),
+     * [36] boots, [37] leggings, [38] chestplate, [39] helmet, [40] offhand.
+     * Each slot is an ItemStack NBT blob (empty = air).
+     */
+    public static byte[][] serializeInventory(org.bukkit.inventory.PlayerInventory inv) {
+        byte[][] out = new byte[41][];
+        org.bukkit.inventory.ItemStack[] main = inv.getContents();
+        if (main != null) {
+            for (int i = 0; i < 36 && i < main.length; i++) {
+                out[i] = EquipmentRecorder.serializeItem(main[i]);
+            }
+        }
+        org.bukkit.inventory.ItemStack[] armor = inv.getArmorContents();
+        if (armor != null) {
+            for (int i = 0; i < 4 && i < armor.length; i++) {
+                out[36 + i] = EquipmentRecorder.serializeItem(armor[i]);
+            }
+        }
+        out[40] = EquipmentRecorder.serializeItem(inv.getItemInOffHand());
+        return out;
+    }
+
+    /** Drop a tracked player's vitals baseline when they leave the region. */
+    public void forgetVitals(UUID uuid) {
+        lastVitals.remove(uuid);
+        lastInventoryBytes.remove(uuid);
+        lastGameMode.remove(uuid);
+        lastHeldSlot.remove(uuid);
+    }
+
     /** Clear per-entity state when a recording starts. */
     public void reset() {
         lastKnown.clear();
@@ -233,6 +356,10 @@ public final class EntityTickRecorder {
         lastFlags.clear();
         lastVel.clear();
         lastPlayerSeen.clear();
+        lastVitals.clear();
+        lastInventoryBytes.clear();
+        lastGameMode.clear();
+        lastHeldSlot.clear();
         inRegion.clear();
     }
 }

@@ -7,7 +7,7 @@
     <parent>
         <groupId>com.echoreplay</groupId>
         <artifactId>echoreplay</artifactId>
-        <version>1.1.0</version>
+        <version>1.1.4</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -24,7 +24,7 @@
 
     <!-- Keep the historical artifact name for the running 1.21.5 server. -->
     <build>
-        <finalName>echoreplay-1.21.5+1.1.0</finalName>
+        <finalName>echoreplay-1.21.5+1.1.4</finalName>
         <resources>
             <resource>
                 <directory>../src/main/resources</directory>

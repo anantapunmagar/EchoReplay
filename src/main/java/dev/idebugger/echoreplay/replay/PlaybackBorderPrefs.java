@@ -11,8 +11,9 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Per-player personal preference for playback border particles.
- * Stores the set of UUIDs that have *disabled* the border. Default is enabled.
+ * Per-player personal preference for border particles (selection/region
+ * outlines and playback borders). Stores the set of UUIDs that have
+ * *disabled* borders via {@code /er border}. Default is enabled.
  * Persists to {@code border_prefs.yml} in the plugin data folder so the
  * toggle survives restarts and is visible per-player.
  */
@@ -54,7 +55,7 @@ public final class PlaybackBorderPrefs {
         List<String> list = cfg.getStringList("disabled");
         if (!list.isEmpty()) {
             for (String s : list) {
-                try { disabled.add(UUID.fromString(s)); } catch (Exception ignored) {}
+                try { disabled.add(UUID.fromString(s)); } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
             }
             return;
         }
@@ -66,7 +67,7 @@ public final class PlaybackBorderPrefs {
                 for (String uuid : cfg.getConfigurationSection("players").getKeys(false)) {
                     boolean enabled = cfg.getBoolean("players." + uuid + ".borderEnabled", true);
                     if (!enabled) {
-                        try { disabled.add(UUID.fromString(uuid)); } catch (Exception ignored) {}
+                        try { disabled.add(UUID.fromString(uuid)); } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
                     }
                 }
             }
@@ -78,7 +79,7 @@ public final class PlaybackBorderPrefs {
                     UUID id = UUID.fromString(key);
                     boolean enabled = cfg.getBoolean(key, true);
                     if (!enabled) disabled.add(id);
-                } catch (Exception ignored) {}
+                } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
             }
         }
     }
@@ -90,6 +91,6 @@ public final class PlaybackBorderPrefs {
         try {
             file.getParentFile().mkdirs();
             cfg.save(file);
-        } catch (IOException ignored) {}
+        } catch (IOException ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed IOException", ignored);}
     }
 }

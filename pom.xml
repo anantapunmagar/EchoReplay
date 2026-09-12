@@ -6,12 +6,12 @@
 
     <groupId>com.echoreplay</groupId>
     <artifactId>echoreplay</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.4</version>
     <packaging>pom</packaging>
 
     <name>EchoReplay</name>
-    <description>Server-Side Region Replay for Paper. One shared source, one specialized jar per Minecraft version.</description>
-    <url>https://github.com/anantapunmagar/EchoReplay</url>
+    <description>Server-side Region Replay for Paper.</description>
+    <url>https://github.com/IntellsGamer/EchoReplay</url>
 
     <modules>
         <module>1.21.5</module>
@@ -25,7 +25,7 @@
         <maven.compiler.target>21</maven.compiler.target>
         <!-- defaults; overridden per version module -->
         <mc.version>1.21.5</mc.version>
-        <paper.version>1.21.4-R0.1-SNAPSHOT</paper.version>
+        <paper.version>1.21.5-R0.1-SNAPSHOT</paper.version>
         <packetevents.version>2.8.0</packetevents.version>
         <gson.version>2.11.0</gson.version>
     </properties>
@@ -36,11 +36,9 @@
         <finalName>echoreplay-${mc.version}</finalName>
         <resources>
             <resource>
+                <!-- EchoReplay's own plugin.yml IS shipped; PacketEvents' plugin.yml
+                     is excluded per-artifact in the shade <filters> below. -->
                 <directory>${basedir}/../src/main/resources</directory>
-                <excludes>
-                    <exclude>plugin.yml</exclude>
-                                <!-- Only exclude from PacketEvents dependency, keep EchoReplay plugin.yml -->
-                </excludes>
             </resource>
         </resources>
         <plugins>
@@ -50,6 +48,14 @@
                 <version>3.13.0</version>
                 <configuration>
                     <release>21</release>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+                <configuration>
                     <encoding>UTF-8</encoding>
                 </configuration>
             </plugin>
@@ -103,10 +109,9 @@
                             </filters>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
-                                <!-- Q-2: removed bogus ManifestResourceTransformer with non-existent
-                                     mainClass com.echoreplay.EchoReplayPlugin. Bukkit uses plugin.yml
-                                     to find the main class, not the jar manifest, so this transformer
-                                     was harmless but misleading. -->
+                        <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                            <mainClass>dev.idebugger.echoreplay.EchoReplay</mainClass>
+                        </transformer>
                             </transformers>
                         </configuration>
                     </execution>
@@ -148,6 +153,12 @@
             <artifactId>gson</artifactId>
             <version>${gson.version}</version>
             <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.11.4</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 </project>

@@ -11,7 +11,17 @@ import java.util.zip.GZIPOutputStream;
 /**
  * Streaming writer of the .echoreplay.gz v1 format.
  *
- * Usage: writeHeaderAndSnapshot(...) once on the IO thread, then repeatedly
+ * <p>Two modes:
+ * <ul>
+ *   <li>gzipped — the final {@code .echoreplay.gz} recording.</li>
+ *   <li>raw — the crash-safety checkpoint ({@code .partial}) file: identical
+ *       section framing without gzip, so a crash mid-write leaves a file whose
+ *       complete sections are still parseable (see {@link GzipRecordingReader#readLenient}).
+ *       Raw files are only consumed by this plugin's recovery path, never by
+ *       the regular reader.</li>
+ * </ul>
+ *
+ * Usage: write the header sections once on the IO thread, then repeatedly
  * appendTimelineEvent(...) from the IO thread. close() finishes the stream.
  * Not thread-safe; the caller serializes access.
  */
@@ -21,8 +31,28 @@ public final class GzipRecordingWriter implements AutoCloseable {
     private final DataOutputStream out;
 
     public GzipRecordingWriter(java.io.OutputStream raw) throws IOException {
-        this.gzip = new GZIPOutputStream(raw);
-        this.out = new DataOutputStream(gzip);
+        this(raw, true);
+    }
+
+    /** @param gzipped false for raw checkpoint streams (no gzip framing). */
+    public GzipRecordingWriter(java.io.OutputStream raw, boolean gzipped) throws IOException {
+        this(raw, gzipped, true);
+    }
+
+    private GzipRecordingWriter(java.io.OutputStream raw, boolean gzipped, boolean writeHeader) throws IOException {
+        if (gzipped) {
+            // Best compression: final writes run on the IO thread and files
+            // are small, so trade a few ms of CPU for a smaller recording.
+            java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(raw) {{
+                def.setLevel(java.util.zip.Deflater.BEST_COMPRESSION);
+            }};
+            this.gzip = gz;
+            this.out = new DataOutputStream(this.gzip);
+        } else {
+            this.gzip = null;
+            this.out = new DataOutputStream(raw);
+        }
+        if (!writeHeader) return;
         // magic
         out.writeByte('E');
         out.writeByte('C');
@@ -37,8 +67,17 @@ public final class GzipRecordingWriter implements AutoCloseable {
     }
 
     /**
-     * Write the meta section header with the given cuboid ranges.
-     * Format version 1 uses explicit configured values for the header fields.
+     * Headerless raw appender for resume: continues an existing checkpoint
+     * section stream without emitting a second magic header (the lenient
+     * reader concatenates sections across the whole file).
+     */
+    public static GzipRecordingWriter appendRaw(java.io.OutputStream raw) throws IOException {
+        return new GzipRecordingWriter(raw, false, false);
+    }
+
+    /**
+     * Write the meta section. For checkpoint files the duration may be 0;
+     * recovery recomputes it from the last event.
      */
     public void writeMeta(String serverVersion, java.util.UUID worldUuid, String worldName,
                           int minX, int minY, int minZ, int maxX, int maxY, int maxZ,
@@ -77,7 +116,7 @@ public final class GzipRecordingWriter implements AutoCloseable {
 
     /**
      * @param sizeX sizeY sizeZ dimensions of the stored dense grid
-     * @param data  palette indices, row-major
+     * @param data  palette indices, row-major (x fastest)
      * @param bitsPerEntry bits used per entry (authoritative)
      */
     public void writeBlocks(int sizeX, int sizeY, int sizeZ, int[] data, int bitsPerEntry) throws IOException {
@@ -139,23 +178,29 @@ public final class GzipRecordingWriter implements AutoCloseable {
         writeSection(RecordingFormat.SEC_TIMELINE, bos.toByteArray());
     }
 
-    public void close() throws IOException {
-        out.flush();
-        gzip.finish();
-        gzip.close();
-    }
-
-    private void writeSection(int type, byte[] body) throws IOException {
+    /** Write one complete section (public for the checkpoint flush path). */
+    public void writeSection(int type, byte[] body) throws IOException {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         Io.LeOut b = Io.leOut(bos);
         b.writeInt(type);
         b.writeInt(body.length);
         b.write(body);
         b.flush();
-        writeRaw(bos.toByteArray());
+        out.write(bos.toByteArray());
     }
 
-    private void writeRaw(byte[] chunk) throws IOException {
-        out.write(chunk);
+    /** Push buffered bytes to disk (checkpoint durability). */
+    public void flush() throws IOException {
+        out.flush();
+    }
+
+    public void close() throws IOException {
+        out.flush();
+        if (gzip != null) {
+            gzip.finish();
+            gzip.close();
+        } else {
+            out.close();
+        }
     }
 }

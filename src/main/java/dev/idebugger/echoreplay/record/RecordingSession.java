@@ -3,18 +3,29 @@ package dev.idebugger.echoreplay.record;
 import dev.idebugger.echoreplay.model.BlockPos;
 import dev.idebugger.echoreplay.model.TimelineEvent;
 import dev.idebugger.echoreplay.select.Cuboid;
+import dev.idebugger.echoreplay.storage.GzipRecordingWriter;
 import dev.idebugger.echoreplay.util.PalettedStorage;
 import org.bukkit.World;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Represents one live recording. Freezes a cuboid, maintains an EventSink, and
  * tracks entity UUID -> stable npcId mapping for the duration of the take.
+ *
+ * <p>Crash safety: once the snapshot is complete the recording streams event
+ * batches into a raw (non-gzip) checkpoint file
+ * ({@code name.echoreplay.gz.partial}). If the server dies mid-recording the
+ * plugin recovers that file on next start, losing at most one flush window.
  */
 public final class RecordingSession {
 
@@ -48,7 +59,29 @@ public final class RecordingSession {
     private volatile State state = State.SNAPSHOTTING;
     private final AtomicInteger sectionsDone = new AtomicInteger(0);
     private int totalSections;
-    private int blocksPerTick = 8000;
+
+    // ---- crash-safety checkpoint (raw, non-gzip section stream) ----
+    private final Object checkpointLock = new Object();
+    private File checkpointFile;
+    private GzipRecordingWriter checkpointWriter;
+    private java.io.OutputStream checkpointStream;
+    // Events already written to the checkpoint; re-merged into the final file
+    // on stop so the full timeline is contiguous.
+    private final List<TimelineEvent> committedEvents = new ArrayList<>();
+    // Palette size at the last checkpoint flush (checkpoints only rewrite the
+    // palette when it grew — the file stays small).
+    private int lastCheckpointPaletteSize = -1;
+    // Rotated (sealed) checkpoint generations. When the live .partial exceeds
+    // storage.checkpoint-rotate-mb it is sealed to .partial.rot<N> and a fresh
+    // .partial is started — the live file stays bounded, recovery merges all
+    // generations in order.
+    private final List<File> rotatedCheckpoints = new ArrayList<>();
+    private int checkpointGeneration = 0;
+
+    // World time of the previous recording tick (for change detection).
+    private long lastWorldTime = -1;
+    // Last recorded storm state (for change detection; -1 = unknown).
+    private int lastStorm = -1;
 
     public enum State { SNAPSHOTTING, RECORDING, FINALIZING, CANCELLED }
 
@@ -77,8 +110,6 @@ public final class RecordingSession {
     public int sinkDepth() { return sink.size(); }
 
     public void setTotalSections(int t) { this.totalSections = t; }
-    public void setBlocksPerTick(int b) { this.blocksPerTick = b; }
-    public int blocksPerTick() { return blocksPerTick; }
 
     public void setRecording() { this.state = State.RECORDING; }
     public void setFinalizing() { this.state = State.FINALIZING; }
@@ -147,8 +178,8 @@ public final class RecordingSession {
         return paletteList.get(index);
     }
 
-    public java.util.List<String> snapshotPalette() {
-        return java.util.Collections.unmodifiableList(new java.util.ArrayList<>(paletteList));
+    public synchronized List<String> snapshotPalette() {
+        return List.copyOf(paletteList);
     }
 
     /** Emit an event with current media time. */
@@ -167,5 +198,196 @@ public final class RecordingSession {
 
     public void advanceClock(long deltaMs) {
         mediaClock.addAndGet(deltaMs);
+    }
+
+    /** Restore media time when resuming from an autosave/checkpoint. */
+    public void restoreMediaClock(long ms) {
+        mediaClock.set(Math.max(0, ms));
+    }
+
+    /** Replace the palette with recovered entries (resume path). */
+    public synchronized void restorePalette(java.util.List<String> palette) {
+        paletteIndex.clear();
+        paletteList.clear();
+        if (palette == null || palette.isEmpty()) {
+            paletteIndex.put("minecraft:air", 0);
+            paletteList.add("minecraft:air");
+            return;
+        }
+        for (int i = 0; i < palette.size(); i++) {
+            String s = palette.get(i) != null ? palette.get(i) : "minecraft:air";
+            paletteIndex.putIfAbsent(s, paletteList.size());
+            if (!paletteList.contains(s)) paletteList.add(s);
+        }
+        // Ensure indices match recovered order even with dupes.
+        paletteIndex.clear();
+        for (int i = 0; i < paletteList.size(); i++) paletteIndex.put(paletteList.get(i), i);
+    }
+
+    /**
+     * Restore the initial snapshot grid from recovery (resume path). The
+     * palette must already be restored so indices line up.
+     */
+    public synchronized void restoreSnapshot(int sx, int sy, int sz, int[] data,
+                                             Map<String, byte[]> nbt) {
+        snapshotStorage = new PalettedStorage(sx, sy, sz);
+        // PalettedStorage.ensure("minecraft:air") runs in ctor; align palette.
+        for (String s : paletteList) snapshotStorage.ensure(s);
+        int[] raw = snapshotStorage.raw();
+        if (data != null) System.arraycopy(data, 0, raw, 0, Math.min(data.length, raw.length));
+        snapshotNbt.clear();
+        if (nbt != null) snapshotNbt.putAll(nbt);
+    }
+
+    /** Emit a WorldTime event at most once per in-game second (world time
+     *  ticks 20x/sec; per-tick events are pure filesize with no visible
+     *  difference for time-of-day playback). */
+    public void emitWorldTimeIfChanged() {
+        long t = world().getFullTime();
+        if (lastWorldTime < 0) {
+            lastWorldTime = t;
+            return;
+        }
+        if (t / 20 != lastWorldTime / 20) {
+            lastWorldTime = t;
+            emit(new TimelineEvent.WorldTime(mediaMillis(), t, !world().isFixedTime()));
+        }
+    }
+
+    /** Emit a Weather event when the storm state changed (0/1 flags). */
+    public void emitWeatherIfChanged() {
+        boolean storm;
+        boolean thunder;
+        try {
+            storm = world().hasStorm();
+            thunder = world().isThundering();
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
+            return;
+        }
+        int code = (storm ? 1 : 0) | (thunder ? 2 : 0);
+        if (code != lastStorm) {
+            lastStorm = code;
+            emit(new TimelineEvent.Weather(mediaMillis(), storm ? 1 : 0, thunder ? 1 : 0));
+        }
+    }
+
+    // ---- checkpoint accessors (called from the IO thread) ----
+
+    public File checkpointFile() {
+        return checkpointFile;
+    }
+
+    public void setCheckpointFile(File f) {
+        this.checkpointFile = f;
+    }
+
+    public Object checkpointLock() {
+        return checkpointLock;
+    }
+
+    public void openCheckpointWriter(File f) {
+        openCheckpointWriter(f, false);
+    }
+
+    /**
+     * @param append true when resuming: continue the existing raw section
+     *               stream instead of truncating it.
+     */
+    public void openCheckpointWriter(File f, boolean append) {
+        synchronized (checkpointLock) {
+            if (checkpointWriter != null) return;
+            try {
+                // Keep the stream OPEN across flushes (one continuous section
+                // stream); closeCheckpointWriter finishes it. Never use
+                // try-with-resources here — it would close the stream
+                // immediately and every later flush would fail with
+                // "Stream Closed".
+                java.io.OutputStream fos = new FileOutputStream(f, append);
+                // Appending raw sections needs no header rewrite: the reader is
+                // lenient and concatenates sections. A fresh file still needs
+                // its header, written by the caller (see startCheckpointAsync).
+                // To keep resume simple we always append after the existing
+                // header — recovery merges generations in order.
+                checkpointStream = fos;
+                if (append && f.exists() && f.length() > 0) {
+                    // Raw mode writer writes its own 8-byte magic+flags header
+                    // in ctor — for append we must NOT emit a second header.
+                    // Use a headerless appender instead.
+                    checkpointWriter = GzipRecordingWriter.appendRaw(fos);
+                } else {
+                    checkpointWriter = new GzipRecordingWriter(fos, false);
+                }
+            } catch (Exception e) {
+                checkpointWriter = null;
+                if (checkpointStream != null) {
+                    try { checkpointStream.close(); } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
+                    checkpointStream = null;
+                }
+                return;
+            }
+        }
+    }
+
+    /** @return the open checkpoint writer, or null when not (yet) open. */
+    public GzipRecordingWriter checkpointWriter() {
+        synchronized (checkpointLock) {
+            return checkpointWriter;
+        }
+    }
+
+    public void closeCheckpointWriter() {
+        synchronized (checkpointLock) {
+            if (checkpointWriter == null) return;
+            try {
+                checkpointWriter.close();
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
+                // A failed close just leaves a shorter-but-still-parseable file.
+            }
+            checkpointWriter = null;
+            if (checkpointStream != null) {
+                try { checkpointStream.close(); } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
+                checkpointStream = null;
+            }
+        }
+    }
+
+    /** Append a checkpointed batch (IO thread). */
+    public synchronized void addCommitted(List<TimelineEvent> batch) {
+        committedEvents.addAll(batch);
+    }
+
+    /** Take all checkpointed events for the final file (IO thread). */
+    public synchronized List<TimelineEvent> takeCommitted() {
+        List<TimelineEvent> out = new ArrayList<>(committedEvents);
+        committedEvents.clear();
+        return out;
+    }
+
+    /** Checkpointed (durable) event count — for /er stats. */
+    public synchronized int committedSize() {
+        return committedEvents.size();
+    }
+
+    public synchronized int lastCheckpointPaletteSize() {
+        return lastCheckpointPaletteSize;
+    }
+
+    public synchronized void setLastCheckpointPaletteSize(int n) {
+        lastCheckpointPaletteSize = n;
+    }
+
+    public synchronized int checkpointGeneration() {
+        return checkpointGeneration;
+    }
+
+    public synchronized void noteRotatedCheckpoint(File sealed) {
+        rotatedCheckpoints.add(sealed);
+        checkpointGeneration++;
+        // Fresh file needs a full palette header again.
+        lastCheckpointPaletteSize = -1;
+    }
+
+    public synchronized List<File> rotatedCheckpoints() {
+        return List.copyOf(rotatedCheckpoints);
     }
 }

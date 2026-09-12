@@ -1,11 +1,11 @@
 name: EchoReplay
-version: 1.1.0
+version: 1.1.4
 main: dev.idebugger.echoreplay.EchoReplay
 api-version: '1.21'
 folia-supported: false
 description: Server-Side Region Replay for Paper 1.21+
 author: EchoReplay
-website: https://github.com/anantapunmagar/EchoReplay
+website: https://github.com/IntellsGamer/EchoReplay
 
 commands:
   echoreplay:
@@ -21,7 +21,7 @@ commands:
 
 permissions:
   echoreplay.use:
-    description: Basic usage (list, info, status, watch)
+    description: Basic usage
     default: true
   echoreplay.wand:
     description: Use the selection wand
@@ -35,8 +35,11 @@ permissions:
   echoreplay.play:
     description: Play replays
     default: op
+  echoreplay.play.*:
+    description: Play any recording (wildcard for per-recording echoreplay.play.<name>)
+    default: op
   echoreplay.control:
-    description: Control playback (pause, seek, speed)
+    description: Control playback (pause, seek, speed, controls)
     default: op
   echoreplay.watch:
     description: Auto-watch replays
@@ -44,12 +47,18 @@ permissions:
   echoreplay.border:
     description: Toggle playback border particles
     default: true
+  echoreplay.fps:
+    description: Trim replay particles/sounds for yourself
+    default: true
+  echoreplay.privacy:
+    description: Opt out of recordings
+    default: true
   echoreplay.delete:
     description: Delete recordings
     default: op
+  echoreplay.admin:
+    description: Admin commands (reload config)
+    default: op
   echoreplay.bypass-limits:
     description: Bypass selection limits
-    default: op
-  echoreplay.admin:
-    description: Admin commands (stats, reload, debug)
     default: op

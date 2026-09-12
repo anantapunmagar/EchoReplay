@@ -49,7 +49,7 @@ public final class PlaybackBorderRenderer {
         if (particle == Particle.DUST) {
             try {
                 dustData = new Particle.DustOptions(org.bukkit.Color.fromRGB(0, 255, 255), 1.0f);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 particle = Particle.END_ROD;
             }
         }
@@ -153,6 +153,6 @@ public final class PlaybackBorderRenderer {
             } else {
                 p.spawnParticle(particle, x, y, z, 1, 0, 0, 0, 0);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
     }
 }

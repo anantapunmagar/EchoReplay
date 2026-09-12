@@ -28,6 +28,8 @@ public final class EquipmentRecorder implements Listener {
 
     private final EchoReplay plugin;
     private final Map<Integer, Map<Integer, String>> lastEquipmentKey = new HashMap<>();
+    /** Last seen ItemStack per npc/slot for semantic (isSimilar) comparison. */
+    private final Map<Integer, Map<Integer, org.bukkit.inventory.ItemStack>> lastEquipmentItem = new HashMap<>();
 
     public EquipmentRecorder(EchoReplay plugin) {
         this.plugin = plugin;
@@ -42,6 +44,7 @@ public final class EquipmentRecorder implements Listener {
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Cuboid c = s.cuboid();
         for (Player p : Bukkit.getOnlinePlayers()) {
+            if (plugin.privacy().isExempt(p)) continue;
             if (!p.getWorld().getUID().equals(s.world().getUID())) continue;
             if (!c.contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ())) continue;
             int npc = s.npcIdFor(p.getUniqueId());
@@ -56,46 +59,53 @@ public final class EquipmentRecorder implements Listener {
         }
     }
 
-    /**
-     * D-6: include a content hash so durability damage, renames, enchantments,
-     * firework stars, and similar meta changes are detected. v1 used
-     * {@code type+amount} only — a sword taking durability damage mid-take
-     * replayed with the old item for the rest of the recording. The hash is
-     * only computed when the cheap {@code type:amount} key matches, so the
-     * hot path stays allocation-light.
-     */
     private void emitIfChanged(RecordingSession s, int npcId, int slot, org.bukkit.inventory.ItemStack item) {
         Map<Integer, String> playerKeys = lastEquipmentKey.computeIfAbsent(npcId, k -> new HashMap<>());
-        String key = equipmentKey(item);
-        String lastKey = playerKeys.get(slot);
-        if (key.equals(lastKey)) return;
+        Map<Integer, org.bukkit.inventory.ItemStack> playerItems =
+                lastEquipmentItem.computeIfAbsent(npcId, k -> new HashMap<>());
+        org.bukkit.inventory.ItemStack prev = playerItems.get(slot);
+        if (itemsSemanticallyEqual(prev, item)) return;
+        playerItems.put(slot, item == null ? null : item.clone());
+        String key = item == null || item.getType() == org.bukkit.Material.AIR ? "AIR" : item.getType().name() + ":" + item.getAmount();
         playerKeys.put(slot, key);
         byte[] bytes = serializeItem(item);
         s.emit(new TimelineEvent.Equipment(s.mediaMillis(), npcId, slot, bytes));
     }
 
     /**
-     * Cheap dedup key: type+amount as a string. If this matches the previous
-     * slot's key we skip emitting — which covers the dominant case of nothing
-     * having changed. The S-2 rework to NBT serialization will make this hash
-     * effectively a content hash for free (NBT bytes already include all
-     * meta). For now this catches the obvious cases (durability, enchant,
-     * rename) via serializeAsBytes.
+     * Semantic item equality (ignores NBT key ordering and other
+     * serialization noise): same material + amount + {@link
+     * org.bukkit.inventory.ItemStack#isSimilar} meta. Null and air are
+     * treated as equal empties.
      */
-    private static String equipmentKey(org.bukkit.inventory.ItemStack item) {
-        if (item == null || item.getType() == org.bukkit.Material.AIR) return "AIR";
-        String base = item.getType().name() + ":" + item.getAmount();
-        // D-6: include a content hash so durability / meta changes are seen.
-        // Paper 1.21+ has serializeAsBytes(); fall back gracefully on older API.
+    public static boolean itemsSemanticallyEqual(org.bukkit.inventory.ItemStack a,
+                                                org.bukkit.inventory.ItemStack b) {
+        boolean aEmpty = a == null || a.getType() == org.bukkit.Material.AIR;
+        boolean bEmpty = b == null || b.getType() == org.bukkit.Material.AIR;
+        if (aEmpty && bEmpty) return true;
+        if (aEmpty != bEmpty) return false;
+        if (a.getType() != b.getType()) return false;
+        if (a.getAmount() != b.getAmount()) return false;
         try {
-            byte[] bytes = item.serializeAsBytes();
-            if (bytes != null && bytes.length > 0) {
-                return base + ":" + java.util.Arrays.hashCode(bytes);
-            }
-        } catch (Throwable ignored) {
-            // very old API or empty item — fall back to type+amount only
+            return a.isSimilar(b);
+        } catch (Exception e) {
+            org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.FINE,
+                    "EchoReplay: equipment similarity check failed, treating as changed", e);
+            return false;
         }
-        return base;
+    }
+
+    /** Byte-blob semantic equality for replay-side dedup (deserializes both). */
+    public static boolean itemBytesSemanticallyEqual(byte[] a, byte[] b) {
+        if (a == b) return true;
+        if (a == null || b == null) {
+            return (a == null || a.length == 0) && (b == null || b.length == 0);
+        }
+        if (a.length == 0 && b.length == 0) return true;
+        if (java.util.Arrays.equals(a, b)) return true;
+        org.bukkit.inventory.ItemStack ia = deserializeItem(a);
+        org.bukkit.inventory.ItemStack ib = deserializeItem(b);
+        return itemsSemanticallyEqual(ia, ib);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -129,12 +139,20 @@ public final class EquipmentRecorder implements Listener {
             org.bukkit.util.io.BukkitObjectOutputStream out = new org.bukkit.util.io.BukkitObjectOutputStream(bos);
             out.writeObject(item);
             out.flush();
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.FINE,
+                    "EchoReplay: failed to serialize item " + item.getType() + ", storing as air", e);
             return new byte[0];
         }
         return bos.toByteArray();
     }
 
+    /**
+     * Version-tolerant deserialization: Bukkit NBT is not guaranteed stable
+     * across Minecraft versions (e.g. 1.21.5 vs 1.21.11 component changes), so
+     * unknown/corrupt blobs gracefully downgrade to air instead of throwing.
+     * Callers must treat air as "unknown item on this version".
+     */
     public static org.bukkit.inventory.ItemStack deserializeItem(byte[] data) {
         if (data == null || data.length == 0) {
             return org.bukkit.inventory.ItemStack.empty();
@@ -143,9 +161,43 @@ public final class EquipmentRecorder implements Listener {
             org.bukkit.util.io.BukkitObjectInputStream in =
                     new org.bukkit.util.io.BukkitObjectInputStream(new java.io.ByteArrayInputStream(data));
             Object obj = in.readObject();
-            if (obj instanceof org.bukkit.inventory.ItemStack item) return item;
-        } catch (Exception ignored) {
+            if (obj instanceof org.bukkit.inventory.ItemStack item) {
+                if (!isValidDeserialized(item)) {
+                    org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.FINE,
+                            "EchoReplay: deserialized item failed validation, downgrading to air");
+                    return org.bukkit.inventory.ItemStack.empty();
+                }
+                return item;
+            }
+        } catch (Exception e) {
+            org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.FINE,
+                    "EchoReplay: could not deserialize item blob (" + data.length
+                            + " bytes, likely cross-version NBT), downgrading to air", e);
+            // Cross-version: a 1.21.11 spear (or other new item) has no
+            // Material on 1.21.5 — substitute an appropriate visible item
+            // (spear -> trident) instead of an empty hand.
+            try {
+                org.bukkit.inventory.ItemStack fb =
+                        dev.idebugger.echoreplay.util.CrossVersion.fallbackItemForBlob(data);
+                if (fb != null && !fb.getType().isAir()) return fb;
+            } catch (Exception ex) {
+                java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE,
+                        "EchoReplay: cross-version item fallback failed", ex);
+            }
         }
         return org.bukkit.inventory.ItemStack.empty();
+    }
+
+    /** Validate a deserialized stack (null type / bad amount = corrupt). */
+    public static boolean isValidDeserialized(org.bukkit.inventory.ItemStack item) {
+        if (item == null) return false;
+        try {
+            if (item.getType() == null) return false;
+            if (item.getType() == org.bukkit.Material.AIR) return true;
+            int amt = item.getAmount();
+            return amt > 0 && amt <= 99;
+        } catch (Exception e) {
+            return false;
+        }
     }
 }

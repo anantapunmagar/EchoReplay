@@ -15,9 +15,7 @@ import org.bukkit.event.block.BlockPhysicsEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 
 import java.io.File;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -30,6 +28,7 @@ public final class ReplayManager implements Listener {
     private final EchoReplay plugin;
     private ReplaySession session;
     private boolean physicsFrozen = false;
+    private final ControlModeManager controls;
 
     /**
      * S-3: atomic loading guard. Without this, two rapid /er play commands
@@ -43,6 +42,7 @@ public final class ReplayManager implements Listener {
 
     public ReplayManager(EchoReplay plugin) {
         this.plugin = plugin;
+        this.controls = new ControlModeManager(plugin, this);
     }
 
     public void onEnable(org.bukkit.configuration.file.FileConfiguration config) {
@@ -51,16 +51,34 @@ public final class ReplayManager implements Listener {
 
     public void registerListeners(EchoReplay p) {
         p.getServer().getPluginManager().registerEvents(this, p);
+        p.getServer().getPluginManager().registerEvents(controls, p);
     }
 
+    public ControlModeManager controls() { return controls; }
+
     public void onDisable() {
+        try {
+            controls.clearAll();
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: control restore on disable failed", e);
+        }
         if (session != null) {
             session.stop();
             // Drain any pending terrain restore synchronously: at shutdown
             // there is no tick loop left, and abandoning it would permanently
-            // leave snapshot blocks where the live terrain was.
+            // leave snapshot blocks where the live terrain was. Bounded by
+            // wall clock (shutdown can be force-killed at any moment) so a
+            // huge restore cannot hang the server shutdown forever.
+            long deadline = System.currentTimeMillis() + 60_000L;
             int guard = 0;
-            while (!session.tick() && guard++ < 100000) {
+            while (!session.tick() && guard++ < 100_000 && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(1L);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
             session = null;
         }
@@ -79,6 +97,12 @@ public final class ReplayManager implements Listener {
             if (done) {
                 session = null;
             }
+        }
+        try {
+            controls.tick();
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: control tick failed", e);
         }
     }
 
@@ -155,16 +179,11 @@ public final class ReplayManager implements Listener {
                     boolean virtual = fVirtual || plugin.cfg().getBoolean("replay.virtual-packets-only", false);
                     session = new ReplaySession(plugin, fName, world, virtual, decoded);
                     // record snapshot restore (world mode) is applied within session
+                    // Only the player who ran /er play becomes a viewer here.
+                    // Bystanders are never force-added (and thus never gamemode-
+                    // switched): they opt in with /er watch.
                     if (fSender != null && fSender.isOnline()) {
                         session.addViewer(fSender);
-                    }
-                    if (session.viewerIds().isEmpty()) {
-                        List<Player> nearby = world.getPlayers().stream().filter(p ->
-                                session.cuboid().contains(p.getLocation().getBlockX(),
-                                        p.getLocation().getBlockY(), p.getLocation().getBlockZ())).toList();
-                        for (Player p : nearby) {
-                            if (p.hasPermission("echoreplay.watch")) session.addViewer(p);
-                        }
                     }
                     session.play();
                     if (fSender != null && fSender.isOnline())
@@ -189,6 +208,12 @@ public final class ReplayManager implements Listener {
         // Begins the async stop (fakes destroyed now, terrain restores over
         // the next ticks); the session clears itself when done.
         session.stop();
+        try {
+            controls.clearAll();
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: control clear on stop failed", e);
+        }
         return "<green>Stopped playback.</green>";
     }
 
@@ -256,16 +281,23 @@ public final class ReplayManager implements Listener {
         if (session == null) return "<red>No replay is playing.</red>";
         String g = stoppingGuard();
         if (g != null) return g;
+        if (session.isViewer(viewer)) return "<gray>You are already watching.</gray>";
+        // addViewer() queues a full state sync (entity snapshot + past block
+        // changes in virtual mode) that the session drains over the next
+        // few ticks.
         session.addViewer(viewer);
-        // S-8: viewer catch-up is handled inside the session's per-tick loop —
-        // new viewers will receive the full current state on the next tick.
-        // (No more stub "re-send spawn packets" loop that did nothing.)
-        return "<green>You are now watching the replay. (Spawning current state…)</green>";
+        return "<green>You are now watching the replay.</green>";
     }
 
     public String leave(Player p) {
         if (session == null) return "<red>No replay is playing.</red>";
         session.removeViewer(p);
+        try {
+            controls.disable(p);
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: control clear on leave failed", e);
+        }
         return "<gray>You left the replay.</gray>";
     }
 
@@ -277,6 +309,25 @@ public final class ReplayManager implements Listener {
                 e.setCancelled(true);
             }
         }
+    }
+
+    // --- Spectator immunity: a first-person spectator's real body walks
+    //     through the live world, where outside mobs and hazards can hit it.
+    //     Damage and hunger drain are cancelled outright, and the per-tick
+    //     driver pins health/hunger to the recording — hits do nothing. ---
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onSpectateDamage(org.bukkit.event.entity.EntityDamageEvent e) {
+        if (!(e.getEntity() instanceof org.bukkit.entity.Player p)) return;
+        ReplaySession s = session;
+        if (s != null && s.isSpectating(p)) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onSpectateFood(org.bukkit.event.entity.FoodLevelChangeEvent e) {
+        if (!(e.getEntity() instanceof org.bukkit.entity.Player p)) return;
+        ReplaySession s = session;
+        if (s != null && s.isSpectating(p)) e.setCancelled(true);
     }
 
     /** True while a world-mode replay is locking this block's location. */
@@ -400,6 +451,13 @@ public final class ReplayManager implements Listener {
     public void onQuit(PlayerQuitEvent e) {
         if (session != null) {
             session.removeViewer(e.getPlayer());
+        }
+    }
+
+    @EventHandler
+    public void onJoin(org.bukkit.event.player.PlayerJoinEvent e) {
+        if (session != null) {
+            session.hideSpectatorsFrom(e.getPlayer());
         }
     }
 
