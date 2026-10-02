@@ -199,7 +199,7 @@ public final class RegionDiffRecorder {
             if (chunk == null) continue;
             Object state = Nms.blockState(chunk, x & 15, y, z & 15);
             String str = Nms.toStringSafe(state);
-           // D-8.9: widened key split to 26/26/12 bits — supports |x|<33M
+            // D-8.9: widened key split to 26/26/12 bits — supports |x|<33M
             // and |z|<33M (full world range) plus y up to 4095 (covers build
             // height + buffer). v1 used 20/20/24-bit split which only safely
             // covered |x|<8.3M and |z|<1M — far-flung bases (anarchy servers,
